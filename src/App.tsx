@@ -24,7 +24,7 @@ import { PASSPORT_STANDARDS, QUICK_COUNTRY_PRESETS, type QuickCountryPreset } fr
 import { SAMPLE_PORTRAIT_DATA_URI } from './assets/sampleImage';
 import { validateDVLottery } from './utils/dvLotteryValidator';
 import { translations } from './i18n/translations';
-import { Check, Eye } from 'lucide-react';
+import { Check } from 'lucide-react';
 
 interface AppSnapshot {
   cropRect: CropRect;
@@ -41,13 +41,27 @@ interface AppSnapshot {
 }
 
 export const App: React.FC = () => {
-  const [language, setLanguage] = useState<Language>('ar'); // Default to Arabic as requested
+  // Default to Arabic; remember the choice (shared with the static content pages)
+  const [language, setLanguage] = useState<Language>(() => {
+    try {
+      const saved = localStorage.getItem('nadir_photolab_lang');
+      if (saved === 'en' || saved === 'ar') return saved;
+    } catch {
+      /* storage unavailable */
+    }
+    return 'ar';
+  });
   const t = translations[language];
 
-  // Set document dir & lang for RTL/LTR
+  // Set document dir & lang for RTL/LTR, and persist the choice
   useEffect(() => {
     document.documentElement.dir = language === 'ar' ? 'rtl' : 'ltr';
     document.documentElement.lang = language;
+    try {
+      localStorage.setItem('nadir_photolab_lang', language);
+    } catch {
+      /* storage unavailable */
+    }
   }, [language]);
 
   // Main Image state
@@ -140,27 +154,6 @@ export const App: React.FC = () => {
 
   // DV Lottery Validation Result
   const [dvValidation, setDvValidation] = useState<DVLotteryValidation | null>(null);
-
-  // Visitor Counter State (Persistent in localStorage, tiny subtle footer)
-  const [visitorCount] = useState<number>(() => {
-    const BASE_VISITS = 15248;
-    try {
-      const saved = localStorage.getItem('nadir_photolab_visitor_count');
-      if (saved) {
-        const parsed = parseInt(saved, 10);
-        if (!isNaN(parsed) && parsed > 0) {
-          const next = parsed + 1;
-          localStorage.setItem('nadir_photolab_visitor_count', next.toString());
-          return next;
-        }
-      }
-      const initial = BASE_VISITS + Math.floor(Math.random() * 45) + 1;
-      localStorage.setItem('nadir_photolab_visitor_count', initial.toString());
-      return initial;
-    } catch {
-      return BASE_VISITS + 12;
-    }
-  });
 
   // Undo / Redo History Stack (up to 30 steps)
   const [history, setHistory] = useState<AppSnapshot[]>([]);
@@ -726,7 +719,7 @@ export const App: React.FC = () => {
 
       </div>
 
-      {/* Footer Bar with Visitor Counter (Tiny subtle font as requested: بخط صغير جدا) */}
+      {/* Footer bar (tiny subtle font) */}
       <footer className="h-5 bg-zinc-950 border-t border-zinc-900 px-3 flex items-center justify-between text-[9px] text-zinc-500 font-mono select-none z-20">
         <div className="flex items-center gap-2">
           <span>NadirPhotoLab Studio Pro</span>
@@ -747,11 +740,6 @@ export const App: React.FC = () => {
               {language === 'ar' ? 'اتصل بنا' : 'Contact'}
             </a>
           </nav>
-        </div>
-        <div className="flex items-center gap-1.5 text-zinc-500">
-          <Eye className="w-2.5 h-2.5 text-zinc-600" />
-          <span>{t.visitorCountLabel}</span>
-          <span className="font-bold text-zinc-400">{visitorCount.toLocaleString()}</span>
         </div>
       </footer>
 
