@@ -732,6 +732,21 @@ export const App: React.FC = () => {
           <span>NadirPhotoLab Studio Pro</span>
           <span>•</span>
           <span>100% Client-Side Private</span>
+          <span>•</span>
+          <nav className="flex items-center gap-2 font-sans" aria-label="Site pages">
+            <a href="./guides/" target="_blank" rel="noopener" className="hover:text-cyan-400 transition-colors">
+              {language === 'ar' ? 'الأدلة' : 'Guides'}
+            </a>
+            <a href="./about.html" target="_blank" rel="noopener" className="hover:text-cyan-400 transition-colors">
+              {language === 'ar' ? 'من نحن' : 'About'}
+            </a>
+            <a href="./privacy.html" target="_blank" rel="noopener" className="hover:text-cyan-400 transition-colors">
+              {language === 'ar' ? 'الخصوصية' : 'Privacy'}
+            </a>
+            <a href="./contact.html" target="_blank" rel="noopener" className="hover:text-cyan-400 transition-colors">
+              {language === 'ar' ? 'اتصل بنا' : 'Contact'}
+            </a>
+          </nav>
         </div>
         <div className="flex items-center gap-1.5 text-zinc-500">
           <Eye className="w-2.5 h-2.5 text-zinc-600" />
