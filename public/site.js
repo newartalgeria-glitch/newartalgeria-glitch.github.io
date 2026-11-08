@@ -26,7 +26,18 @@
     try { localStorage.setItem(KEY, l); } catch (e) { /* ignore */ }
   }
 
+  // ---- Email links: assembled at runtime so the address is not plain text in the HTML ----
+  function wireEmails() {
+    var links = document.querySelectorAll('a[data-mail-user]');
+    for (var i = 0; i < links.length; i++) {
+      var addr = links[i].getAttribute('data-mail-user') + '@' + links[i].getAttribute('data-mail-domain');
+      links[i].href = 'mailto:' + addr;
+      links[i].textContent = addr;
+    }
+  }
+
   document.addEventListener('DOMContentLoaded', function () {
+    wireEmails();
     apply(lang);
     var btn = document.getElementById('lang-toggle');
     if (btn) btn.addEventListener('click', function () { apply(lang === 'ar' ? 'en' : 'ar'); });
