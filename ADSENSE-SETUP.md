@@ -8,7 +8,7 @@
 2. بعد الموافقة (أو حين تطلب Google التحقق من الموقع)، افتح الملف `public/ads-config.js` وضع معرّف الناشر:
 
    ```js
-   window.ADSENSE_CLIENT = 'ca-pub-XXXXXXXXXXXXXXXX';
+   window.ADSENSE_CLIENT = 'ca-pub-4523466271796141';
    ```
 
 3. ارفع التغيير إلى فرع `main`، وسيُنشر الموقع تلقائيا عبر GitHub Actions.
@@ -26,7 +26,7 @@ The site is ready for an AdSense application. Ads load **on the guide pages only
 2. After approval (or when Google asks you to verify the site), set your publisher ID in `public/ads-config.js`:
 
    ```js
-   window.ADSENSE_CLIENT = 'ca-pub-XXXXXXXXXXXXXXXX';
+   window.ADSENSE_CLIENT = 'ca-pub-4523466271796141';
    ```
 
 3. Push to `main`; GitHub Actions redeploys the site.

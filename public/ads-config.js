@@ -8,7 +8,7 @@ window.ADSENSE_CLIENT = '';
 
 // Helps AdSense verify site ownership (harmless, no ads are loaded here).
 (function () {
-  if (!window.ADSENSE_CLIENT) return;
+  if (!window.ADSENSE_CLIENT || document.querySelector('meta[name="google-adsense-account"]')) return;
   var m = document.createElement('meta');
   m.name = 'google-adsense-account';
   m.content = window.ADSENSE_CLIENT;
