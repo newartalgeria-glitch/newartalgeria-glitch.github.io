@@ -191,7 +191,7 @@ export const CanvasViewport: React.FC<CanvasViewportProps> = ({
   useEffect(() => {
     if (image && containerRef.current) {
       const rect = containerRef.current.getBoundingClientRect();
-      const padding = 60;
+      const padding = 40;
       const scaleX = (rect.width - padding) / image.width;
       const scaleY = (rect.height - padding) / image.height;
       const initialZoom = Math.min(1.5, Math.max(0.2, Math.min(scaleX, scaleY)));
@@ -920,6 +920,48 @@ export const CanvasViewport: React.FC<CanvasViewportProps> = ({
         return;
       }
 
+      if (e.key.startsWith('Arrow') && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        const dirX = e.key === 'ArrowLeft' ? -1 : e.key === 'ArrowRight' ? 1 : 0;
+        const dirY = e.key === 'ArrowUp' ? -1 : e.key === 'ArrowDown' ? 1 : 0;
+        const k = e.shiftKey ? 10 : 1;
+        const off = offscreenCanvasRef.current;
+        const bW = off ? off.width : 0;
+        const bH = off ? off.height : 0;
+        let handled = false;
+        if (activeLayer === 'text' && textOverlay.enabled && onTextOverlayChange) {
+          const step = 0.2 * k;
+          onTextOverlayChange({
+            ...textOverlay,
+            xPercent: Number(Math.max(0, Math.min(100, (textOverlay.xPercent ?? 50) + dirX * step)).toFixed(1)),
+            yPercent: Number(Math.max(0, Math.min(100, (textOverlay.yPercent ?? 90) + dirY * step)).toFixed(1)),
+          });
+          handled = true;
+        } else if (activeLayer === 'suit' && suit.enabled) {
+          const step = 0.2 * k;
+          onSuitChange({
+            ...suit,
+            xPercent: Math.max(5, Math.min(95, suit.xPercent + dirX * step)),
+            yPercent: Math.max(10, Math.min(110, suit.yPercent + dirY * step)),
+          });
+          handled = true;
+        } else if (activeLayer === 'background' && onBgTransformChange) {
+          onBgTransformChange({ ...bgTransform, x: bgTransform.x + dirX * k, y: bgTransform.y + dirY * k });
+          handled = true;
+        } else if (activeLayer === 'subject' && onSubjectTransformChange) {
+          onSubjectTransformChange({ ...subjectTransform, x: subjectTransform.x + dirX * k, y: subjectTransform.y + dirY * k });
+          handled = true;
+        } else if ((activeLayer === 'crop' || activeLayer === 'none') && bW > 0) {
+          onCropChange({
+            ...cropRect,
+            x: Math.max(0, Math.min(bW - cropRect.width, cropRect.x + dirX * k)),
+            y: Math.max(0, Math.min(bH - cropRect.height, cropRect.y + dirY * k)),
+          });
+          handled = true;
+        }
+        if (handled) e.preventDefault();
+        return;
+      }
+
       if (e.key === '+' || e.key === '=') {
         e.preventDefault();
         setZoom(z => Math.min(6.0, z * 1.15));
@@ -956,7 +998,7 @@ export const CanvasViewport: React.FC<CanvasViewportProps> = ({
       window.removeEventListener('resize', handleResize);
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [drawDisplayCanvas, rotation, flipH, showBiometricGuides, showDVGuides, suit, activeLayer, textOverlay, onRotationChange, onFlipHChange, onSuitChange, onTextOverlayChange, setShowBiometricGuides, setShowDVGuides]);
+  }, [drawDisplayCanvas, rotation, flipH, showBiometricGuides, showDVGuides, suit, activeLayer, textOverlay, bgTransform, subjectTransform, cropRect, onBgTransformChange, onSubjectTransformChange, onCropChange, onRotationChange, onFlipHChange, onSuitChange, onTextOverlayChange, setShowBiometricGuides, setShowDVGuides]);
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
@@ -1692,7 +1734,7 @@ export const CanvasViewport: React.FC<CanvasViewportProps> = ({
   const handleZoomFit = () => {
     if (image && containerRef.current) {
       const rect = containerRef.current.getBoundingClientRect();
-      const padding = 60;
+      const padding = 40;
       const scaleX = (rect.width - padding) / image.width;
       const scaleY = (rect.height - padding) / image.height;
       setZoom(Math.min(1.5, Math.max(0.2, Math.min(scaleX, scaleY))));
@@ -1701,111 +1743,150 @@ export const CanvasViewport: React.FC<CanvasViewportProps> = ({
   };
 
   return (
+    <div dir="ltr" className="flex-1 h-full w-full min-w-0 flex bg-zinc-950">
+      {/* Floating Viewport Toolbars */}
+      <div className="shrink-0 w-14 bg-zinc-900 border-e border-zinc-800 flex overflow-y-auto text-zinc-300 z-20"><div className="m-auto flex flex-col items-center gap-1.5 py-2 w-full px-1">
+        <button
+          onClick={() => setZoom(z => Math.max(0.1, z * 0.85))}
+          className="p-1 rounded-full hover:bg-zinc-800 hover:text-white transition cursor-pointer"
+          title={t.zoomOut}
+        >
+          <ZoomOut className="w-4 h-4" />
+        </button>
+
+        <span className="text-[11px] font-mono w-full text-center text-zinc-300">
+          {Math.round(zoom * 100)}%
+        </span>
+
+        <button
+          onClick={() => setZoom(z => Math.min(6.0, z * 1.15))}
+          className="p-1 rounded-full hover:bg-zinc-800 hover:text-white transition cursor-pointer"
+          title={t.zoomIn}
+        >
+          <ZoomIn className="w-4 h-4" />
+        </button>
+
+        <button
+          onClick={handleZoomFit}
+          className="p-1 rounded-full hover:bg-zinc-800 hover:text-white transition cursor-pointer text-xs"
+          title={t.zoomFit}
+        >
+          <Maximize className="w-4 h-4" />
+        </button>
+
+        <div className="w-6 h-px bg-zinc-700 my-1"></div>
+
+        <button
+          onClick={() => onRotationChange((rotation + 270) % 360)}
+          className="p-1 rounded-full hover:bg-zinc-800 hover:text-white transition cursor-pointer"
+          title={t.rotateLeft}
+        >
+          <RotateCcw className="w-4 h-4" />
+        </button>
+        <button
+          onClick={() => onRotationChange((rotation + 90) % 360)}
+          className="p-1 rounded-full hover:bg-zinc-800 hover:text-white transition cursor-pointer"
+          title={t.rotateRight}
+        >
+          <RotateCw className="w-4 h-4" />
+        </button>
+        <button
+          onClick={() => onFlipHChange(!flipH)}
+          className={`p-1 rounded-full transition cursor-pointer ${
+            flipH ? 'bg-cyan-500/20 text-cyan-400' : 'hover:bg-zinc-800 hover:text-white'
+          }`}
+          title={t.flipHorizontal}
+        >
+          <FlipHorizontal className="w-4 h-4" />
+        </button>
+        <button
+          onClick={() => onFlipVChange(!flipV)}
+          className={`p-1 rounded-full transition cursor-pointer ${
+            flipV ? 'bg-cyan-500/20 text-cyan-400' : 'hover:bg-zinc-800 hover:text-white'
+          }`}
+          title={t.flipVertical}
+        >
+          <FlipVertical className="w-4 h-4" />
+        </button>
+
+        <div className="w-6 h-px bg-zinc-700 my-1"></div>
+
+        <button
+          onClick={() => setShowDVGuides(!showDVGuides)}
+          className={`flex flex-col items-center gap-0.5 px-1 py-1 rounded-lg text-[10px] transition cursor-pointer ${
+            showDVGuides 
+              ? 'bg-emerald-600/30 text-emerald-400 border border-emerald-500/40 font-semibold' 
+              : 'hover:bg-zinc-800 hover:text-white text-zinc-400'
+          }`}
+          title={t.dvOverlayToggle}
+        >
+          <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
+          <span>DV 2x2"</span>
+        </button>
+
+        <button
+          onClick={() => setShowBiometricGuides(!showBiometricGuides)}
+          className={`flex flex-col items-center gap-0.5 px-1 py-1 rounded-lg text-[10px] transition cursor-pointer ${
+            showBiometricGuides 
+              ? 'bg-cyan-600/30 text-cyan-400 border border-cyan-500/40 font-semibold' 
+              : 'hover:bg-zinc-800 hover:text-white text-zinc-400'
+          }`}
+          title={t.guidesToggle}
+        >
+          <Eye className="w-3.5 h-3.5" />
+          <span>35x45</span>
+        </button>
+
+        <button
+          onClick={() => setShowGrid(!showGrid)}
+          className={`p-1 rounded-full transition cursor-pointer ${
+            showGrid ? 'bg-blue-600/30 text-blue-400' : 'hover:bg-zinc-800 hover:text-white text-zinc-400'
+          }`}
+          title={t.ruleOfThirdsToggle}
+        >
+          <Grid3X3 className="w-4 h-4" />
+        </button>
+
+        {/* Quick Delete Active Layer Button */}
+        {(suit.enabled && activeLayer === 'suit') && (
+          <>
+            <div className="w-6 h-px bg-zinc-700 my-1"></div>
+            <button
+              onClick={() => {
+                onSuitChange({ ...suit, enabled: false });
+                if (onActiveLayerChange) onActiveLayerChange('none');
+              }}
+              className="flex flex-col items-center gap-0.5 px-1 py-1 rounded-lg text-[10px] bg-rose-600/30 hover:bg-rose-600/50 text-rose-300 border border-rose-500/40 transition cursor-pointer"
+              title={language === 'ar' ? 'حذف اللباس' : 'Delete Suit'}
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+            </button>
+          </>
+        )}
+
+        {(textOverlay.enabled && activeLayer === 'text' && onTextOverlayChange) && (
+          <>
+            <div className="w-6 h-px bg-zinc-700 my-1"></div>
+            <button
+              onClick={() => {
+                onTextOverlayChange({ ...textOverlay, enabled: false });
+                if (onActiveLayerChange) onActiveLayerChange('none');
+              }}
+              className="flex flex-col items-center gap-0.5 px-1 py-1 rounded-lg text-[10px] bg-rose-600/30 hover:bg-rose-600/50 text-rose-300 border border-rose-500/40 transition cursor-pointer"
+              title={language === 'ar' ? 'حذف النص' : 'Delete Text'}
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+            </button>
+          </>
+        )}
+      </div></div>
     <div 
       ref={containerRef} 
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
-      className="relative flex-1 h-full w-full bg-zinc-950 checkerboard-pattern overflow-hidden flex items-center justify-center select-none"
+      className="relative flex-1 h-full min-w-0 bg-zinc-950 checkerboard-pattern overflow-hidden flex items-center justify-center select-none"
     >
-      {/* Top Floating Multi-Layer Switcher Toolbar */}
-      <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-zinc-900/90 backdrop-blur-md border border-zinc-800 rounded-full px-2.5 py-1.5 flex items-center gap-1.5 shadow-2xl z-30">
-        <span className="text-[11px] font-semibold text-zinc-400 px-1.5 hidden sm:inline">
-          {language === 'ar' ? 'التحكم بالطبقات:' : 'Active Layer:'}
-        </span>
-
-        {/* Crop Box Selector */}
-        <button
-          onClick={() => onActiveLayerChange && onActiveLayerChange(activeLayer === 'crop' ? 'none' : 'crop')}
-          className={`px-2.5 py-1 rounded-full text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer ${
-            activeLayer === 'crop' || activeLayer === 'none'
-              ? 'bg-blue-600 text-white shadow-md'
-              : 'bg-zinc-800/80 hover:bg-zinc-700 text-zinc-300'
-          }`}
-          title={language === 'ar' ? 'تعديل إطار القص' : 'Crop Frame'}
-        >
-          <Crop className="w-3.5 h-3.5" />
-          <span>{language === 'ar' ? 'إطار القص' : 'Crop'}</span>
-        </button>
-
-        {/* Background Layer Selector */}
-        <button
-          onClick={() => onActiveLayerChange && onActiveLayerChange(activeLayer === 'background' ? 'none' : 'background')}
-          className={`px-2.5 py-1 rounded-full text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer ${
-            activeLayer === 'background'
-              ? 'bg-purple-600 text-white shadow-md'
-              : 'bg-zinc-800/80 hover:bg-zinc-700 text-zinc-300'
-          }`}
-          title={language === 'ar' ? 'تحريك وتكبير/تصغير الخلفية' : 'Background Layer'}
-        >
-          <ImageIcon className="w-3.5 h-3.5" />
-          <span>{language === 'ar' ? 'الخلفية' : 'Backdrop'}</span>
-        </button>
-
-        {/* Suit Layer Selector */}
-        {suit.enabled && (
-          <button
-            onClick={() => onActiveLayerChange && onActiveLayerChange(activeLayer === 'suit' ? 'none' : 'suit')}
-            className={`px-2.5 py-1 rounded-full text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer ${
-              activeLayer === 'suit'
-                ? 'bg-cyan-600 text-white shadow-md'
-                : 'bg-zinc-800/80 hover:bg-zinc-700 text-zinc-300'
-            }`}
-            title={language === 'ar' ? 'تحريك وتكبير/تصغير البدلة' : 'Suit Layer'}
-          >
-            <Shirt className="w-3.5 h-3.5" />
-            <span>{language === 'ar' ? 'البدلة' : 'Suit'}</span>
-          </button>
-        )}
-
-        {/* Text Layer Selector */}
-        {textOverlay.enabled && (
-          <button
-            onClick={() => onActiveLayerChange && onActiveLayerChange(activeLayer === 'text' ? 'none' : 'text')}
-            className={`px-2.5 py-1 rounded-full text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer ${
-              activeLayer === 'text'
-                ? 'bg-amber-600 text-white shadow-md'
-                : 'bg-zinc-800/80 hover:bg-zinc-700 text-zinc-300'
-            }`}
-            title={language === 'ar' ? 'تحريك وتكبير/تصغير النص' : 'Text Layer'}
-          >
-            <Type className="w-3.5 h-3.5" />
-            <span>{language === 'ar' ? 'النص' : 'Text'}</span>
-          </button>
-        )}
-
-        {/* Subject Layer Selector */}
-        <button
-          onClick={() => onActiveLayerChange && onActiveLayerChange(activeLayer === 'subject' ? 'none' : 'subject')}
-          className={`px-2 py-1 rounded-full text-xs font-semibold flex items-center gap-1 transition cursor-pointer ${
-            activeLayer === 'subject'
-              ? 'bg-emerald-600 text-white shadow-md'
-              : 'bg-zinc-800/80 hover:bg-zinc-700 text-zinc-300'
-          }`}
-          title={language === 'ar' ? 'تحريك وتكبير الشخص' : 'Subject Layer'}
-        >
-          <User className="w-3.5 h-3.5" />
-          <span className="hidden sm:inline">{language === 'ar' ? 'الشخص' : 'Subject'}</span>
-        </button>
-
-        {/* Reset Layer Transforms */}
-        {(bgTransform.x !== 0 || bgTransform.y !== 0 || bgTransform.scale !== 1 || (bgTransform.scaleX !== undefined && bgTransform.scaleX !== 1) || (bgTransform.scaleY !== undefined && bgTransform.scaleY !== 1) || subjectTransform.x !== 0 || subjectTransform.scale !== 1 || (textOverlay.scale && textOverlay.scale !== 1)) && (
-          <button
-            onClick={() => {
-              if (onSubjectTransformChange) onSubjectTransformChange({ x: 0, y: 0, scale: 1, rotation: 0 });
-              if (onBgTransformChange) onBgTransformChange({ x: 0, y: 0, scale: 1, scaleX: 1, scaleY: 1, rotation: 0 });
-              if (onTextOverlayChange && textOverlay.enabled) {
-                onTextOverlayChange({ ...textOverlay, xPercent: 50, yPercent: 88, scale: 1.0, rotation: 0 });
-              }
-            }}
-            className="p-1 rounded-full hover:bg-zinc-700 text-zinc-400 hover:text-white transition cursor-pointer"
-            title={language === 'ar' ? 'إعادة ضبط أبعاد ومواضع الطبقات' : 'Reset Transforms'}
-          >
-            <ResetIcon className="w-3.5 h-3.5" />
-          </button>
-        )}
-      </div>
-
       {/* Drag & Drop Visual Indicator */}
       {isDragOverFile && (
         <div className="absolute inset-0 z-40 bg-cyan-950/80 backdrop-blur-sm border-2 border-dashed border-cyan-400 flex flex-col items-center justify-center pointer-events-none">
@@ -1847,144 +1928,104 @@ export const CanvasViewport: React.FC<CanvasViewportProps> = ({
         }`}
       />
 
-      {/* Floating Viewport Toolbars */}
-      <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-zinc-900/90 backdrop-blur-md border border-zinc-800 rounded-full px-3 py-1.5 flex items-center gap-2 shadow-2xl text-zinc-300 z-20">
-        <button
-          onClick={() => setZoom(z => Math.max(0.1, z * 0.85))}
-          className="p-1 rounded-full hover:bg-zinc-800 hover:text-white transition cursor-pointer"
-          title={t.zoomOut}
-        >
-          <ZoomOut className="w-4 h-4" />
-        </button>
-
-        <span className="text-xs font-mono w-12 text-center text-zinc-300">
-          {Math.round(zoom * 100)}%
+    </div>
+      {/* Top Floating Multi-Layer Switcher Toolbar */}
+      <div className="shrink-0 w-[4.6rem] bg-zinc-900 border-s border-zinc-800 flex overflow-y-auto z-30"><div className="m-auto flex flex-col items-stretch gap-1.5 px-1.5 py-2">
+        <span className="text-[10px] font-semibold text-zinc-400 text-center leading-tight pb-1">
+          {language === 'ar' ? 'التحكم بالطبقات:' : 'Active Layer:'}
         </span>
 
+        {/* Crop Box Selector */}
         <button
-          onClick={() => setZoom(z => Math.min(6.0, z * 1.15))}
-          className="p-1 rounded-full hover:bg-zinc-800 hover:text-white transition cursor-pointer"
-          title={t.zoomIn}
-        >
-          <ZoomIn className="w-4 h-4" />
-        </button>
-
-        <button
-          onClick={handleZoomFit}
-          className="p-1 rounded-full hover:bg-zinc-800 hover:text-white transition cursor-pointer text-xs"
-          title={t.zoomFit}
-        >
-          <Maximize className="w-4 h-4" />
-        </button>
-
-        <div className="h-4 w-px bg-zinc-700 mx-1"></div>
-
-        <button
-          onClick={() => onRotationChange((rotation + 270) % 360)}
-          className="p-1 rounded-full hover:bg-zinc-800 hover:text-white transition cursor-pointer"
-          title={t.rotateLeft}
-        >
-          <RotateCcw className="w-4 h-4" />
-        </button>
-        <button
-          onClick={() => onRotationChange((rotation + 90) % 360)}
-          className="p-1 rounded-full hover:bg-zinc-800 hover:text-white transition cursor-pointer"
-          title={t.rotateRight}
-        >
-          <RotateCw className="w-4 h-4" />
-        </button>
-        <button
-          onClick={() => onFlipHChange(!flipH)}
-          className={`p-1 rounded-full transition cursor-pointer ${
-            flipH ? 'bg-cyan-500/20 text-cyan-400' : 'hover:bg-zinc-800 hover:text-white'
+          onClick={() => onActiveLayerChange && onActiveLayerChange(activeLayer === 'crop' ? 'none' : 'crop')}
+          className={`px-1 py-1.5 rounded-xl text-[11px] font-semibold flex flex-col items-center gap-0.5 transition cursor-pointer ${
+            activeLayer === 'crop' || activeLayer === 'none'
+              ? 'bg-blue-600 text-white shadow-md'
+              : 'bg-zinc-800/80 hover:bg-zinc-700 text-zinc-300'
           }`}
-          title={t.flipHorizontal}
+          title={language === 'ar' ? 'تعديل إطار القص' : 'Crop Frame'}
         >
-          <FlipHorizontal className="w-4 h-4" />
+          <Crop className="w-3.5 h-3.5" />
+          <span>{language === 'ar' ? 'إطار القص' : 'Crop'}</span>
         </button>
+
+        {/* Background Layer Selector */}
         <button
-          onClick={() => onFlipVChange(!flipV)}
-          className={`p-1 rounded-full transition cursor-pointer ${
-            flipV ? 'bg-cyan-500/20 text-cyan-400' : 'hover:bg-zinc-800 hover:text-white'
+          onClick={() => onActiveLayerChange && onActiveLayerChange(activeLayer === 'background' ? 'none' : 'background')}
+          className={`px-1 py-1.5 rounded-xl text-[11px] font-semibold flex flex-col items-center gap-0.5 transition cursor-pointer ${
+            activeLayer === 'background'
+              ? 'bg-purple-600 text-white shadow-md'
+              : 'bg-zinc-800/80 hover:bg-zinc-700 text-zinc-300'
           }`}
-          title={t.flipVertical}
+          title={language === 'ar' ? 'تحريك وتكبير/تصغير الخلفية' : 'Background Layer'}
         >
-          <FlipVertical className="w-4 h-4" />
+          <ImageIcon className="w-3.5 h-3.5" />
+          <span>{language === 'ar' ? 'الخلفية' : 'Backdrop'}</span>
         </button>
 
-        <div className="h-4 w-px bg-zinc-700 mx-1"></div>
-
-        <button
-          onClick={() => setShowDVGuides(!showDVGuides)}
-          className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-xs transition cursor-pointer ${
-            showDVGuides 
-              ? 'bg-emerald-600/30 text-emerald-400 border border-emerald-500/40 font-semibold' 
-              : 'hover:bg-zinc-800 hover:text-white text-zinc-400'
-          }`}
-          title={t.dvOverlayToggle}
-        >
-          <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
-          <span>DV 2x2"</span>
-        </button>
-
-        <button
-          onClick={() => setShowBiometricGuides(!showBiometricGuides)}
-          className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-xs transition cursor-pointer ${
-            showBiometricGuides 
-              ? 'bg-cyan-600/30 text-cyan-400 border border-cyan-500/40 font-semibold' 
-              : 'hover:bg-zinc-800 hover:text-white text-zinc-400'
-          }`}
-          title={t.guidesToggle}
-        >
-          <Eye className="w-3.5 h-3.5" />
-          <span>35x45</span>
-        </button>
-
-        <button
-          onClick={() => setShowGrid(!showGrid)}
-          className={`p-1 rounded-full transition cursor-pointer ${
-            showGrid ? 'bg-blue-600/30 text-blue-400' : 'hover:bg-zinc-800 hover:text-white text-zinc-400'
-          }`}
-          title={t.ruleOfThirdsToggle}
-        >
-          <Grid3X3 className="w-4 h-4" />
-        </button>
-
-        {/* Quick Delete Active Layer Button */}
-        {(suit.enabled && activeLayer === 'suit') && (
-          <>
-            <div className="h-4 w-px bg-zinc-700 mx-1"></div>
-            <button
-              onClick={() => {
-                onSuitChange({ ...suit, enabled: false });
-                if (onActiveLayerChange) onActiveLayerChange('none');
-              }}
-              className="flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-rose-600/30 hover:bg-rose-600/50 text-rose-300 border border-rose-500/40 transition cursor-pointer"
-              title={language === 'ar' ? 'حذف اللباس' : 'Delete Suit'}
-            >
-              <Trash2 className="w-3.5 h-3.5" />
-              <span>{language === 'ar' ? 'حذف البدلة' : 'Remove Suit'}</span>
-            </button>
-          </>
+        {/* Suit Layer Selector */}
+        {suit.enabled && (
+          <button
+            onClick={() => onActiveLayerChange && onActiveLayerChange(activeLayer === 'suit' ? 'none' : 'suit')}
+            className={`px-1 py-1.5 rounded-xl text-[11px] font-semibold flex flex-col items-center gap-0.5 transition cursor-pointer ${
+              activeLayer === 'suit'
+                ? 'bg-cyan-600 text-white shadow-md'
+                : 'bg-zinc-800/80 hover:bg-zinc-700 text-zinc-300'
+            }`}
+            title={language === 'ar' ? 'تحريك وتكبير/تصغير البدلة' : 'Suit Layer'}
+          >
+            <Shirt className="w-3.5 h-3.5" />
+            <span>{language === 'ar' ? 'البدلة' : 'Suit'}</span>
+          </button>
         )}
 
-        {(textOverlay.enabled && activeLayer === 'text' && onTextOverlayChange) && (
-          <>
-            <div className="h-4 w-px bg-zinc-700 mx-1"></div>
-            <button
-              onClick={() => {
-                onTextOverlayChange({ ...textOverlay, enabled: false });
-                if (onActiveLayerChange) onActiveLayerChange('none');
-              }}
-              className="flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-rose-600/30 hover:bg-rose-600/50 text-rose-300 border border-rose-500/40 transition cursor-pointer"
-              title={language === 'ar' ? 'حذف النص' : 'Delete Text'}
-            >
-              <Trash2 className="w-3.5 h-3.5" />
-              <span>{language === 'ar' ? 'حذف النص' : 'Remove Text'}</span>
-            </button>
-          </>
+        {/* Text Layer Selector */}
+        {textOverlay.enabled && (
+          <button
+            onClick={() => onActiveLayerChange && onActiveLayerChange(activeLayer === 'text' ? 'none' : 'text')}
+            className={`px-1 py-1.5 rounded-xl text-[11px] font-semibold flex flex-col items-center gap-0.5 transition cursor-pointer ${
+              activeLayer === 'text'
+                ? 'bg-amber-600 text-white shadow-md'
+                : 'bg-zinc-800/80 hover:bg-zinc-700 text-zinc-300'
+            }`}
+            title={language === 'ar' ? 'تحريك وتكبير/تصغير النص' : 'Text Layer'}
+          >
+            <Type className="w-3.5 h-3.5" />
+            <span>{language === 'ar' ? 'النص' : 'Text'}</span>
+          </button>
         )}
-      </div>
+
+        {/* Subject Layer Selector */}
+        <button
+          onClick={() => onActiveLayerChange && onActiveLayerChange(activeLayer === 'subject' ? 'none' : 'subject')}
+          className={`px-1 py-1.5 rounded-xl text-[11px] font-semibold flex flex-col items-center gap-0.5 transition cursor-pointer ${
+            activeLayer === 'subject'
+              ? 'bg-emerald-600 text-white shadow-md'
+              : 'bg-zinc-800/80 hover:bg-zinc-700 text-zinc-300'
+          }`}
+          title={language === 'ar' ? 'تحريك وتكبير الشخص' : 'Subject Layer'}
+        >
+          <User className="w-3.5 h-3.5" />
+          <span>{language === 'ar' ? 'الشخص' : 'Subject'}</span>
+        </button>
+
+        {/* Reset Layer Transforms */}
+        {(bgTransform.x !== 0 || bgTransform.y !== 0 || bgTransform.scale !== 1 || (bgTransform.scaleX !== undefined && bgTransform.scaleX !== 1) || (bgTransform.scaleY !== undefined && bgTransform.scaleY !== 1) || subjectTransform.x !== 0 || subjectTransform.scale !== 1 || (textOverlay.scale && textOverlay.scale !== 1)) && (
+          <button
+            onClick={() => {
+              if (onSubjectTransformChange) onSubjectTransformChange({ x: 0, y: 0, scale: 1, rotation: 0 });
+              if (onBgTransformChange) onBgTransformChange({ x: 0, y: 0, scale: 1, scaleX: 1, scaleY: 1, rotation: 0 });
+              if (onTextOverlayChange && textOverlay.enabled) {
+                onTextOverlayChange({ ...textOverlay, xPercent: 50, yPercent: 88, scale: 1.0, rotation: 0 });
+              }
+            }}
+            className="p-1 self-center rounded-full hover:bg-zinc-700 text-zinc-400 hover:text-white transition cursor-pointer"
+            title={language === 'ar' ? 'إعادة ضبط أبعاد ومواضع الطبقات' : 'Reset Transforms'}
+          >
+            <ResetIcon className="w-3.5 h-3.5" />
+          </button>
+        )}
+      </div></div>
     </div>
   );
 };
