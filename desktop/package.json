@@ -1,0 +1,63 @@
+{
+  "name": "nadir-photo-lab-desktop",
+  "version": "1.0.0",
+  "description": "Nadir Photo Lab - desktop edition (offline)",
+  "author": "Nadir",
+  "main": "main.js",
+  "private": true,
+  "devDependencies": {
+    "electron": "^41.0.0",
+    "electron-builder": "^26.0.0",
+    "resedit": "^2.0.3"
+  },
+  "build": {
+    "appId": "com.nadir.photolab",
+    "productName": "Nadir Photo Lab",
+    "copyright": "Copyright \u00a9 2026 Nadir",
+    "asar": false,
+    "publish": null,
+    "electronLanguages": [
+      "fr",
+      "ar",
+      "en-US"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "main.js",
+      "package.json",
+      "icon.png",
+      "web/**/*"
+    ],
+    "afterPack": "afterPack.js",
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "icon.ico",
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": "always",
+      "createStartMenuShortcut": true,
+      "shortcutName": "Nadir Photo Lab",
+      "installerIcon": "icon.ico",
+      "uninstallerIcon": "icon.ico",
+      "installerHeaderIcon": "icon.ico",
+      "include": "installer.nsh",
+      "language": "1036",
+      "artifactName": "Nadir-Photo-Lab-Setup.exe",
+      "deleteAppDataOnUninstall": false,
+      "runAfterFinish": true
+    }
+  }
+}
