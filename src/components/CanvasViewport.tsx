@@ -17,6 +17,7 @@ import {
   Type,
   Crop,
   Eraser,
+  Sparkles,
   Undo2
 } from 'lucide-react';
 import type { 
@@ -450,11 +451,13 @@ export const CanvasViewport: React.FC<CanvasViewportProps> = ({
     const ctx = displayCanvas.getContext('2d');
     if (!ctx) return;
 
-    if (containerRef.current) {
-      const rect = containerRef.current.getBoundingClientRect();
-      if (displayCanvas.width !== rect.width || displayCanvas.height !== rect.height) {
-        displayCanvas.width = rect.width;
-        displayCanvas.height = rect.height;
+    {
+      const rect = displayCanvas.getBoundingClientRect();
+      const w = Math.round(rect.width);
+      const h = Math.round(rect.height);
+      if (w > 0 && h > 0 && (displayCanvas.width !== w || displayCanvas.height !== h)) {
+        displayCanvas.width = w;
+        displayCanvas.height = h;
       }
     }
 
@@ -1160,8 +1163,11 @@ export const CanvasViewport: React.FC<CanvasViewportProps> = ({
     if (!displayCanvas || !offCanvas) return { x: 0, y: 0 };
 
     const rect = displayCanvas.getBoundingClientRect();
-    const mouseX = screenX - rect.left;
-    const mouseY = screenY - rect.top;
+    // bitmap pixels per CSS pixel (1 unless the page is scaled/zoomed)
+    const sx = rect.width ? displayCanvas.width / rect.width : 1;
+    const sy = rect.height ? displayCanvas.height / rect.height : 1;
+    const mouseX = (screenX - rect.left) * sx;
+    const mouseY = (screenY - rect.top) * sy;
 
     const centerX = displayCanvas.width / 2 + pan.x;
     const centerY = displayCanvas.height / 2 + pan.y;
@@ -1170,6 +1176,62 @@ export const CanvasViewport: React.FC<CanvasViewportProps> = ({
     const imgY = (mouseY - centerY) / zoom + offCanvas.height / 2;
 
     return { x: imgX, y: imgY };
+  };
+
+  // ---- Auto face fit: zoom / raise / lower the crop so head and eyes land in the correct zone
+  const [fitBusy, setFitBusy] = useState(false);
+  const [fitMsg, setFitMsg] = useState<string | null>(null);
+
+  const autoFitFace = async () => {
+    const off = offscreenCanvasRef.current;
+    if (!off || !image) return;
+    setFitBusy(true);
+    setFitMsg(null);
+    const ar = language === 'ar';
+    try {
+      const f = await detectFace(off);
+      if (!f) {
+        setFaceState('none');
+        setFitMsg(ar ? 'لم يُكتشف وجه في الصورة — جرّب صورة أوضح أو بوجه ظاهر بالكامل' : 'No face detected — try a clearer photo with the whole face visible');
+        return;
+      }
+      setFace(f);
+      setFaceState('ok');
+      const dv = showDVGuides || !showBiometricGuides;
+      if (!showDVGuides && !showBiometricGuides) setShowBiometricGuides(true);
+      const hMin = dv ? 50 : (activeStandard.headMinPercent > 0 ? activeStandard.headMinPercent : 70);
+      const hMax = dv ? 69 : (activeStandard.headMaxPercent > 0 && activeStandard.headMaxPercent < 100 ? activeStandard.headMaxPercent : 80);
+      const headPx = f.chinY - f.crownY;
+      const aspect = cropRect.width / cropRect.height;
+      const headTarget = (hMin + hMax) / 2 / 100;
+      let H = headPx / headTarget;
+      let W = H * aspect;
+      let squeezed = false;
+      const maxScale = Math.min(off.width / W, off.height / H);
+      if (maxScale < 1) {
+        H *= maxScale;
+        W *= maxScale;
+        squeezed = true;
+      }
+      // vertical placement: DV puts the eyes in the middle of their zone, others leave a little headroom
+      let top = dv ? f.eyeY - 0.375 * H : f.crownY - (1 - headPx / H) * 0.38 * H;
+      let left = f.centerX - W / 2;
+      top = Math.max(0, Math.min(off.height - H, top));
+      left = Math.max(0, Math.min(off.width - W, left));
+      const next = { ...cropRect, x: Math.round(left), y: Math.round(top), width: Math.round(W), height: Math.round(H) };
+      onCropChange(next);
+      const r = evalFit(f, next, dv ? 'dv' : 'bio', hMin, hMax);
+      setFitMsg(
+        r.ok
+          ? (ar ? '✔ تم ضبط الوجه والقص' : '✔ Face and crop adjusted')
+          : squeezed
+            ? (ar ? 'الصورة الأصلية ضيقة حول الوجه — لا يمكن توسيع القص أكثر. استعمل صورة أوسع.' : 'The original photo is too tight around the face — use a wider photo.')
+            : r.issues.map((k) => FIT_TEXT[k][language]).join(' • '),
+      );
+    } finally {
+      setFitBusy(false);
+      window.setTimeout(() => setFitMsg(null), 6000);
+    }
   };
 
   // ---- Eraser helpers -------------------------------------------------
@@ -1217,7 +1279,9 @@ export const CanvasViewport: React.FC<CanvasViewportProps> = ({
     if (!pt) return;
     const c = m.getContext('2d');
     if (!c) return;
-    const r = (eraserSize / 2 / zoom) * pt.k;
+    const dRect = displayCanvasRef.current?.getBoundingClientRect();
+    const cssToBmp = dRect && dRect.width && displayCanvasRef.current ? displayCanvasRef.current.width / dRect.width : 1;
+    const r = ((eraserSize * cssToBmp) / 2 / zoom) * pt.k;
     c.save();
     c.globalCompositeOperation = eraserMode === 'erase' ? 'source-over' : 'destination-out';
     c.fillStyle = '#000';
@@ -2063,6 +2127,16 @@ export const CanvasViewport: React.FC<CanvasViewportProps> = ({
         <div className="w-6 h-px bg-zinc-700 my-1"></div>
 
         <button
+          onClick={autoFitFace}
+          disabled={fitBusy}
+          className="flex flex-col items-center gap-0.5 px-1 py-1 rounded-lg text-[10px] bg-amber-500/20 hover:bg-amber-500/35 text-amber-300 border border-amber-500/40 font-semibold transition cursor-pointer disabled:opacity-50"
+          title={language === 'ar' ? 'ضبط الوجه تلقائياً: زوم + رفع/خفض + قص حسب العينين والرأس بضغطة واحدة' : 'Auto face fit: zoom, raise/lower and crop by eyes and head in one click'}
+        >
+          <Sparkles className="w-4 h-4" />
+          <span>{fitBusy ? '…' : (language === 'ar' ? 'ضبط الوجه' : 'Fit face')}</span>
+        </button>
+
+        <button
           onClick={() => setShowDVGuides(!showDVGuides)}
           className={`flex flex-col items-center gap-0.5 px-1 py-1 rounded-lg text-[10px] transition cursor-pointer ${
             showDVGuides 
@@ -2231,12 +2305,18 @@ export const CanvasViewport: React.FC<CanvasViewportProps> = ({
         }`}
       />
 
+      {fitMsg && (
+        <div className="absolute top-3 left-1/2 -translate-x-1/2 z-40 max-w-[80%] rounded-lg bg-black/85 border border-amber-500/50 px-3 py-1.5 text-xs font-semibold text-amber-200 text-center">
+          {fitMsg}
+        </div>
+      )}
+
       {eraserOn && hoverPos && (
         <div
-          className="pointer-events-none fixed z-50 rounded-full"
+          className="pointer-events-none absolute z-50 rounded-full"
           style={{
-            left: hoverPos.x - eraserSize / 2,
-            top: hoverPos.y - eraserSize / 2,
+            left: hoverPos.x - (containerRef.current?.getBoundingClientRect().left ?? 0) - eraserSize / 2,
+            top: hoverPos.y - (containerRef.current?.getBoundingClientRect().top ?? 0) - eraserSize / 2,
             width: eraserSize,
             height: eraserSize,
             border: `2px solid ${eraserMode === 'erase' ? '#fb7185' : '#34d399'}`,
