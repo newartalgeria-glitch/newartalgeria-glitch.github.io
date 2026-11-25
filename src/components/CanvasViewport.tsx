@@ -15,7 +15,9 @@ import {
   RotateCcw as ResetIcon,
   Shirt,
   Type,
-  Crop
+  Crop,
+  Eraser,
+  Undo2
 } from 'lucide-react';
 import type { 
   Language, 
@@ -34,6 +36,8 @@ import { translations } from '../i18n/translations';
 import { autoRemoveGreenScreen, applyAdjustments, applySharpness, applySkinSmoothing } from '../utils/colorUtils';
 import { SUIT_TEMPLATES } from '../assets/suits';
 import { BACKGROUND_PRESETS } from '../assets/presets';
+import { detectFace, evalFit, FIT_TEXT } from '../utils/faceMetrics';
+import type { FaceMetrics, FitResult } from '../utils/faceMetrics';
 
 interface CanvasViewportProps {
   language: Language;
@@ -117,6 +121,44 @@ export const CanvasViewport: React.FC<CanvasViewportProps> = ({
   // Drag over file state
   const [isDragOverFile, setIsDragOverFile] = useState(false);
 
+  // Eraser (removes parts of the photo, e.g. shoulders, before a suit is placed)
+  const [eraserOn, setEraserOn] = useState(false);
+  const [eraserSize, setEraserSize] = useState(40); // brush diameter in screen px
+  const [maskVersion, setMaskVersion] = useState(0);
+  const [hoverPos, setHoverPos] = useState<{ x: number; y: number } | null>(null);
+  const maskRef = useRef<HTMLCanvasElement | null>(null); // lives in the photo's own pixel space
+  const maskHasContent = useRef(false);
+  const maskUndo = useRef<HTMLCanvasElement[]>([]);
+  const strokeLast = useRef<{ x: number; y: number } | null>(null);
+  const maskRaf = useRef(0);
+  const [eraserMode, setEraserMode] = useState<'erase' | 'restore'>('erase');
+  const [undoCount, setUndoCount] = useState(0);
+  const [isErasing, setIsErasing] = useState(false);
+
+  // Face measurements for the red/green guides
+  const [face, setFace] = useState<FaceMetrics | null>(null);
+  const [faceState, setFaceState] = useState<'idle' | 'loading' | 'ok' | 'none'>('idle');
+  const guidesRef = useRef(false);
+  guidesRef.current = showDVGuides || showBiometricGuides;
+  const faceTimer = useRef(0);
+  const faceSeq = useRef(0);
+
+  /** (re)measure the face a moment after the picture stopped changing */
+  const scheduleFace = () => {
+    window.clearTimeout(faceTimer.current);
+    if (!guidesRef.current) return;
+    faceTimer.current = window.setTimeout(async () => {
+      const off = offscreenCanvasRef.current;
+      if (!off || !guidesRef.current) return;
+      const seq = ++faceSeq.current;
+      setFaceState((st) => (st === 'ok' ? 'ok' : 'loading'));
+      const r = await detectFace(off);
+      if (seq !== faceSeq.current) return;
+      setFace(r);
+      setFaceState(r ? 'ok' : 'none');
+    }, 450);
+  };
+
   // Cached assets
   const suitImgCache = useRef<{ [id: string]: HTMLImageElement }>({});
   const bgPresetImgCache = useRef<{ [id: string]: HTMLImageElement }>({});
@@ -172,6 +214,23 @@ export const CanvasViewport: React.FC<CanvasViewportProps> = ({
       }
     });
   }, [customSuits]);
+
+  // A new photo starts with a clean eraser mask and no face measurements
+  useEffect(() => {
+    maskRef.current = null;
+    maskHasContent.current = false;
+    maskUndo.current = [];
+    setUndoCount(0);
+    setMaskVersion((v) => v + 1);
+    setFace(null);
+    setFaceState('idle');
+    setEraserOn(false);
+  }, [image]);
+
+  // Measure the face as soon as a guide is switched on
+  useEffect(() => {
+    if (showDVGuides || showBiometricGuides) scheduleFace();
+  }, [showDVGuides, showBiometricGuides]);
 
   // Pre-load custom background if set
   useEffect(() => {
@@ -234,6 +293,12 @@ export const CanvasViewport: React.FC<CanvasViewportProps> = ({
     subCtx.rotate((totalRotationDeg * Math.PI) / 180);
     subCtx.scale(flipH ? -1 : 1, flipV ? -1 : 1);
     subCtx.drawImage(image, -image.width / 2, -image.height / 2);
+    const hasErase = !!(maskRef.current && maskHasContent.current);
+    if (hasErase) {
+      subCtx.globalCompositeOperation = 'destination-out';
+      subCtx.drawImage(maskRef.current!, -image.width / 2, -image.height / 2, image.width, image.height);
+      subCtx.globalCompositeOperation = 'source-over';
+    }
     subCtx.restore();
 
     // 2. Intelligent Green Screen Removal if enabled
@@ -245,6 +310,12 @@ export const CanvasViewport: React.FC<CanvasViewportProps> = ({
 
     // 3. Composite Dual Layers: Background (bottom) + Subject (top)
     ctx.clearRect(0, 0, baseW, baseH);
+
+    // Erased areas show the background colour (white by default) when no background replacement is active
+    if (hasErase && !chromaKey.enabled) {
+      ctx.fillStyle = background.type === 'solid' ? background.color : '#ffffff';
+      ctx.fillRect(0, 0, baseW, baseH);
+    }
 
     // Draw Background Layer
     if (chromaKey.enabled && background.type !== 'transparent') {
@@ -347,6 +418,7 @@ export const CanvasViewport: React.FC<CanvasViewportProps> = ({
 
     // Render to Display Canvas Viewport
     drawDisplayCanvas();
+    scheduleFace();
 
     if (onCanvasRendered) {
       onCanvasRendered(offCanvas);
@@ -363,6 +435,7 @@ export const CanvasViewport: React.FC<CanvasViewportProps> = ({
     customSuits,
     subjectTransform,
     bgTransform,
+    maskVersion,
     onCanvasRendered,
   ]);
 
@@ -406,6 +479,52 @@ export const CanvasViewport: React.FC<CanvasViewportProps> = ({
     const cx = imgX + cropRect.x;
     const cy = imgY + cropRect.y;
 
+    // Guide status: red while the crop does not fit, green once it does, amber while the face is unknown
+    const bMin = activeStandard.headMinPercent > 0 ? activeStandard.headMinPercent : 70;
+    const bMax = activeStandard.headMaxPercent > 0 && activeStandard.headMaxPercent < 100 ? activeStandard.headMaxPercent : 80;
+    const dvFit: FitResult | null = showDVGuides && face ? evalFit(face, cropRect, 'dv', 50, 69) : null;
+    const bioFit: FitResult | null = showBiometricGuides && face ? evalFit(face, cropRect, 'bio', bMin, bMax) : null;
+    const fitColors = (fit: FitResult | null): [string, string, string] =>
+      fit
+        ? fit.ok
+          ? ['#22c55e', 'rgba(34, 197, 94, 0.9)', 'rgba(34, 197, 94, 0.15)']
+          : ['#ef4444', 'rgba(239, 68, 68, 0.9)', 'rgba(239, 68, 68, 0.15)']
+        : ['#f59e0b', 'rgba(245, 158, 11, 0.9)', 'rgba(245, 158, 11, 0.15)'];
+    const anyGuide = showDVGuides || showBiometricGuides;
+    const activeFits = [dvFit, bioFit].filter((f): f is FitResult => !!f);
+    const frameCol = !anyGuide
+      ? null
+      : !face
+        ? '#f59e0b'
+        : activeFits.every((f) => f.ok)
+          ? '#22c55e'
+          : '#ef4444';
+    const drawFitStatus = (c: CanvasRenderingContext2D, fit: FitResult | null, col: string, x: number, y: number) => {
+      const ar = language === 'ar';
+      let text: string;
+      if (!face) {
+        text = faceState === 'none'
+          ? (ar ? 'لم يُكتشف وجه — تأكد أن الوجه ظاهر بوضوح' : 'No face detected — make sure the face is clearly visible')
+          : (ar ? 'جارٍ تحليل الوجه…' : 'Analysing the face…');
+      } else if (fit) {
+        text = fit.ok ? FIT_TEXT.ok[language] : fit.issues.map((k) => FIT_TEXT[k][language]).join(' • ');
+        text += ar ? `  (الرأس ${fit.headPct.toFixed(0)}%)` : `  (head ${fit.headPct.toFixed(0)}%)`;
+      } else {
+        return;
+      }
+      c.save();
+      c.setLineDash([]);
+      c.font = `bold ${12 / zoom}px sans-serif`;
+      c.textBaseline = 'top';
+      const pad = 5 / zoom;
+      const w = c.measureText(text).width;
+      c.fillStyle = 'rgba(0, 0, 0, 0.72)';
+      c.fillRect(x + 4 / zoom, y + 4 / zoom, w + pad * 2, 18 / zoom);
+      c.fillStyle = col;
+      c.fillText(text, x + 4 / zoom + pad, y + 7 / zoom);
+      c.restore();
+    };
+
     // Top
     ctx.fillRect(imgX, imgY, cw, cropRect.y);
     // Bottom
@@ -416,8 +535,8 @@ export const CanvasViewport: React.FC<CanvasViewportProps> = ({
     ctx.fillRect(cx + cropRect.width, cy, cw - (cropRect.x + cropRect.width), cropRect.height);
 
     // --- Crop Box Border & Handles ---
-    ctx.strokeStyle = activeStandard.aspectRatio === 0 ? '#a855f7' : '#38bdf8';
-    ctx.lineWidth = 2 / zoom;
+    ctx.strokeStyle = frameCol ?? (activeStandard.aspectRatio === 0 ? '#a855f7' : '#38bdf8');
+    ctx.lineWidth = (frameCol ? 3 : 2) / zoom;
     ctx.strokeRect(cx, cy, cropRect.width, cropRect.height);
 
     // Crop box 8 handles
@@ -776,7 +895,8 @@ export const CanvasViewport: React.FC<CanvasViewportProps> = ({
     // --- DV Lottery Official Alignment Guides Overlay ---
     if (showDVGuides) {
       ctx.save();
-      ctx.strokeStyle = 'rgba(34, 197, 94, 0.85)';
+      const [gCol, gColA, gFill] = fitColors(dvFit);
+      ctx.strokeStyle = gColA;
       ctx.lineWidth = 1.5 / zoom;
       ctx.setLineDash([6 / zoom, 4 / zoom]);
       ctx.beginPath();
@@ -787,10 +907,10 @@ export const CanvasViewport: React.FC<CanvasViewportProps> = ({
       const eyeTopY = cy + cropRect.height * 0.31;
       const eyeBottomY = cy + cropRect.height * 0.44;
 
-      ctx.fillStyle = 'rgba(34, 197, 94, 0.15)';
+      ctx.fillStyle = gFill;
       ctx.fillRect(cx, eyeTopY, cropRect.width, eyeBottomY - eyeTopY);
 
-      ctx.strokeStyle = '#22c55e';
+      ctx.strokeStyle = gCol;
       ctx.setLineDash([]);
       ctx.beginPath();
       ctx.moveTo(cx, eyeTopY); ctx.lineTo(cx + cropRect.width, eyeTopY);
@@ -802,39 +922,41 @@ export const CanvasViewport: React.FC<CanvasViewportProps> = ({
       const ovalRadiusX = cropRect.width * 0.22;
       const ovalRadiusY = cropRect.height * 0.29;
 
-      ctx.strokeStyle = '#22c55e';
+      ctx.strokeStyle = gCol;
       ctx.lineWidth = 2 / zoom;
       ctx.setLineDash([5 / zoom, 3 / zoom]);
       ctx.beginPath();
       ctx.ellipse(ovalCenterX, ovalCenterY, ovalRadiusX, ovalRadiusY, 0, 0, Math.PI * 2);
       ctx.stroke();
 
-      ctx.fillStyle = '#22c55e';
+      ctx.fillStyle = gCol;
       ctx.font = `bold ${Math.max(10, 11 / zoom)}px sans-serif`;
       ctx.fillText(
         language === 'ar' ? 'مستوى العينين (56%-69%)' : 'Eye Zone (56%-69%)',
         cx + 6 / zoom,
         eyeTopY - 4 / zoom
       );
+      drawFitStatus(ctx, dvFit, gCol, cx, cy);
       ctx.restore();
     }
 
     // --- Biometric Passport Standard Oval Guide (Algeria / EU Schengen / Turkey / UK 70-80%) ---
     if (showBiometricGuides) {
       ctx.save();
+      const [bCol] = fitColors(bioFit);
       const ovalCenterX = cx + cropRect.width / 2;
       const ovalCenterY = cy + cropRect.height * 0.44;
       const ovalRadiusX = cropRect.width * 0.26;
       const ovalRadiusY = cropRect.height * 0.36;
 
-      ctx.strokeStyle = '#38bdf8';
+      ctx.strokeStyle = bCol;
       ctx.lineWidth = 1.8 / zoom;
       ctx.setLineDash([4 / zoom, 3 / zoom]);
       ctx.beginPath();
       ctx.ellipse(ovalCenterX, ovalCenterY, ovalRadiusX, ovalRadiusY, 0, 0, Math.PI * 2);
       ctx.stroke();
 
-      ctx.strokeStyle = '#38bdf8';
+      ctx.strokeStyle = bCol;
       ctx.setLineDash([2 / zoom, 2 / zoom]);
       const crownY = ovalCenterY - ovalRadiusY;
       const chinY = ovalCenterY + ovalRadiusY;
@@ -843,7 +965,7 @@ export const CanvasViewport: React.FC<CanvasViewportProps> = ({
       ctx.moveTo(cx, chinY); ctx.lineTo(cx + cropRect.width, chinY);
       ctx.stroke();
 
-      ctx.fillStyle = '#38bdf8';
+      ctx.fillStyle = bCol;
       ctx.font = `bold ${Math.max(10, 11 / zoom)}px sans-serif`;
       ctx.fillText(
         language === 'ar' ? 'مستوى قمة الرأس 80%' : 'Crown Top 80%',
@@ -855,6 +977,7 @@ export const CanvasViewport: React.FC<CanvasViewportProps> = ({
         cx + 6 / zoom,
         chinY + 12 / zoom
       );
+      drawFitStatus(ctx, bioFit, bCol, cx, cy + (showDVGuides ? 26 / zoom : 0));
       ctx.restore();
     }
 
@@ -895,6 +1018,8 @@ export const CanvasViewport: React.FC<CanvasViewportProps> = ({
     background,
     textOverlay,
     activeStandard,
+    face,
+    faceState,
   ]);
 
   const suitWidthToHeight = (width: number, aspect: number) => {
@@ -917,6 +1042,11 @@ export const CanvasViewport: React.FC<CanvasViewportProps> = ({
 
     const handleKeyDown = (e: KeyboardEvent) => {
       if (['INPUT', 'SELECT', 'TEXTAREA'].includes((e.target as HTMLElement)?.tagName)) {
+        return;
+      }
+
+      if (eraserOn && (e.key === '[' || e.key === ']')) {
+        setEraserSize((v) => Math.max(8, Math.min(200, v + (e.key === ']' ? 8 : -8))));
         return;
       }
 
@@ -998,7 +1128,7 @@ export const CanvasViewport: React.FC<CanvasViewportProps> = ({
       window.removeEventListener('resize', handleResize);
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [drawDisplayCanvas, rotation, flipH, showBiometricGuides, showDVGuides, suit, activeLayer, textOverlay, bgTransform, subjectTransform, cropRect, onBgTransformChange, onSubjectTransformChange, onCropChange, onRotationChange, onFlipHChange, onSuitChange, onTextOverlayChange, setShowBiometricGuides, setShowDVGuides]);
+  }, [drawDisplayCanvas, eraserOn, rotation, flipH, showBiometricGuides, showDVGuides, suit, activeLayer, textOverlay, bgTransform, subjectTransform, cropRect, onBgTransformChange, onSubjectTransformChange, onCropChange, onRotationChange, onFlipHChange, onSuitChange, onTextOverlayChange, setShowBiometricGuides, setShowDVGuides]);
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
@@ -1042,6 +1172,109 @@ export const CanvasViewport: React.FC<CanvasViewportProps> = ({
     return { x: imgX, y: imgY };
   };
 
+  // ---- Eraser helpers -------------------------------------------------
+  const ensureMask = () => {
+    if (!image) return null;
+    if (!maskRef.current) {
+      const k = Math.min(1, 2048 / Math.max(image.width, image.height));
+      const m = document.createElement('canvas');
+      m.width = Math.max(1, Math.round(image.width * k));
+      m.height = Math.max(1, Math.round(image.height * k));
+      maskRef.current = m;
+    }
+    return maskRef.current;
+  };
+
+  const bumpMask = () => {
+    if (maskRaf.current) return;
+    maskRaf.current = requestAnimationFrame(() => {
+      maskRaf.current = 0;
+      setMaskVersion((v) => v + 1);
+    });
+  };
+
+  /** offscreen-canvas point -> mask pixel (undoes rotate/straighten/flip) */
+  const offToMask = (x: number, y: number) => {
+    const off = offscreenCanvasRef.current;
+    const m = ensureMask();
+    if (!off || !m || !image) return null;
+    const th = -((rotation + (adjustments.straighten || 0)) * Math.PI) / 180;
+    const dx = x - off.width / 2;
+    const dy = y - off.height / 2;
+    let px = dx * Math.cos(th) - dy * Math.sin(th);
+    let py = dx * Math.sin(th) + dy * Math.cos(th);
+    if (flipH) px = -px;
+    if (flipV) py = -py;
+    const k = m.width / image.width;
+    return { x: (px + image.width / 2) * k, y: (py + image.height / 2) * k, k };
+  };
+
+  const eraserStroke = (clientX: number, clientY: number, first: boolean) => {
+    const m = ensureMask();
+    if (!m) return;
+    const o = screenToImageCoord(clientX, clientY);
+    const pt = offToMask(o.x, o.y);
+    if (!pt) return;
+    const c = m.getContext('2d');
+    if (!c) return;
+    const r = (eraserSize / 2 / zoom) * pt.k;
+    c.save();
+    c.globalCompositeOperation = eraserMode === 'erase' ? 'source-over' : 'destination-out';
+    c.fillStyle = '#000';
+    c.strokeStyle = '#000';
+    c.lineCap = 'round';
+    c.lineJoin = 'round';
+    c.lineWidth = r * 2;
+    const last = strokeLast.current;
+    if (last && !first) {
+      c.beginPath();
+      c.moveTo(last.x, last.y);
+      c.lineTo(pt.x, pt.y);
+      c.stroke();
+    } else {
+      c.beginPath();
+      c.arc(pt.x, pt.y, r, 0, Math.PI * 2);
+      c.fill();
+    }
+    c.restore();
+    strokeLast.current = { x: pt.x, y: pt.y };
+    if (eraserMode === 'erase') maskHasContent.current = true;
+    bumpMask();
+  };
+
+  const snapshotMask = () => {
+    const m = ensureMask();
+    if (!m) return;
+    const snap = document.createElement('canvas');
+    snap.width = m.width;
+    snap.height = m.height;
+    snap.getContext('2d')!.drawImage(m, 0, 0);
+    maskUndo.current.push(snap);
+    if (maskUndo.current.length > 10) maskUndo.current.shift();
+    setUndoCount(maskUndo.current.length);
+  };
+
+  const undoEraser = () => {
+    const snap = maskUndo.current.pop();
+    const m = maskRef.current;
+    if (snap && m) {
+      const c = m.getContext('2d')!;
+      c.clearRect(0, 0, m.width, m.height);
+      c.drawImage(snap, 0, 0);
+      setMaskVersion((v) => v + 1);
+    }
+    setUndoCount(maskUndo.current.length);
+  };
+
+  const clearEraser = () => {
+    const m = maskRef.current;
+    if (!m) return;
+    snapshotMask();
+    m.getContext('2d')!.clearRect(0, 0, m.width, m.height);
+    maskHasContent.current = false;
+    setMaskVersion((v) => v + 1);
+  };
+
   /**
    * Mouse Down: Priority Hit Testing for Suit, Text, Background, Crop Box, or Viewport Pan
    */
@@ -1051,6 +1284,13 @@ export const CanvasViewport: React.FC<CanvasViewportProps> = ({
     if (e.button === 1 || e.altKey || e.shiftKey) {
       setIsPanning(true);
       setPanStart({ x: e.clientX - pan.x, y: e.clientY - pan.y });
+      return;
+    }
+
+    if (eraserOn && e.button === 0) {
+      snapshotMask();
+      eraserStroke(e.clientX, e.clientY, true);
+      setIsErasing(true);
       return;
     }
 
@@ -1431,6 +1671,12 @@ export const CanvasViewport: React.FC<CanvasViewportProps> = ({
       return;
     }
 
+    if (eraserOn) {
+      setHoverPos({ x: e.clientX, y: e.clientY });
+      if (isErasing) eraserStroke(e.clientX, e.clientY, false);
+      return;
+    }
+
     const { x: imgX, y: imgY } = screenToImageCoord(e.clientX, e.clientY);
     const offCanvas = offscreenCanvasRef.current;
     if (!offCanvas) return;
@@ -1720,6 +1966,11 @@ export const CanvasViewport: React.FC<CanvasViewportProps> = ({
   };
 
   const handleMouseUp = () => {
+    if (isErasing) {
+      setIsErasing(false);
+      strokeLast.current = null;
+      scheduleFace();
+    }
     setIsPanning(false);
     setDragHandle(null);
     setLayerAction(null);
@@ -1847,6 +2098,56 @@ export const CanvasViewport: React.FC<CanvasViewportProps> = ({
           <Grid3X3 className="w-4 h-4" />
         </button>
 
+        <div className="w-6 h-px bg-zinc-700 my-1"></div>
+
+        <button
+          onClick={() => setEraserOn(!eraserOn)}
+          className={`flex flex-col items-center gap-0.5 px-1 py-1 rounded-lg text-[10px] transition cursor-pointer ${
+            eraserOn
+              ? 'bg-rose-600/30 text-rose-300 border border-rose-500/40 font-semibold'
+              : 'hover:bg-zinc-800 hover:text-white text-zinc-400'
+          }`}
+          title={language === 'ar' ? 'ممحاة: امسح الأكتاف أو أي جزء قبل وضع البدلة' : 'Eraser: remove shoulders or any area before placing the suit'}
+        >
+          <Eraser className="w-4 h-4" />
+          <span>{language === 'ar' ? 'ممحاة' : 'Eraser'}</span>
+        </button>
+
+        {eraserOn && (
+          <div className="flex flex-col items-center gap-1 w-full">
+            <input
+              type="range"
+              min={8}
+              max={200}
+              value={eraserSize}
+              onChange={(e) => setEraserSize(Number(e.target.value))}
+              className="w-11 accent-rose-500"
+              title={language === 'ar' ? 'حجم الممحاة ( [ و ] )' : 'Eraser size ( [ and ] )'}
+              aria-label="eraser size"
+            />
+            <span className="text-[9px] text-zinc-400">{eraserSize}px</span>
+            <button
+              onClick={() => setEraserMode(eraserMode === 'erase' ? 'restore' : 'erase')}
+              className="text-[9px] px-1 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-200 cursor-pointer"
+            >
+              {eraserMode === 'erase' ? (language === 'ar' ? 'مسح' : 'Erase') : (language === 'ar' ? 'استرجاع' : 'Restore')}
+            </button>
+            <button
+              onClick={undoEraser}
+              disabled={undoCount === 0}
+              className="text-[9px] px-1 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-200 disabled:opacity-40 cursor-pointer"
+            >
+              {language === 'ar' ? 'تراجع' : 'Undo'}
+            </button>
+            <button
+              onClick={clearEraser}
+              className="text-[9px] px-1 py-0.5 rounded bg-zinc-800 hover:bg-rose-700 text-zinc-200 cursor-pointer"
+            >
+              {language === 'ar' ? 'إعادة' : 'Reset'}
+            </button>
+          </div>
+        )}
+
         {/* Quick Delete Active Layer Button */}
         {(suit.enabled && activeLayer === 'suit') && (
           <>
@@ -1907,11 +2208,13 @@ export const CanvasViewport: React.FC<CanvasViewportProps> = ({
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
-        onMouseLeave={handleMouseUp}
+        onMouseLeave={() => { setHoverPos(null); handleMouseUp(); }}
         onWheel={handleWheel}
         className={`w-full h-full block ${
           isPanning 
             ? 'cursor-grabbing' 
+            : eraserOn
+              ? 'cursor-none'
             : layerAction?.type === 'rotate'
               ? 'cursor-crosshair'
               : layerAction?.type === 'scale'
@@ -1927,6 +2230,20 @@ export const CanvasViewport: React.FC<CanvasViewportProps> = ({
                         : 'cursor-default'
         }`}
       />
+
+      {eraserOn && hoverPos && (
+        <div
+          className="pointer-events-none fixed z-50 rounded-full"
+          style={{
+            left: hoverPos.x - eraserSize / 2,
+            top: hoverPos.y - eraserSize / 2,
+            width: eraserSize,
+            height: eraserSize,
+            border: `2px solid ${eraserMode === 'erase' ? '#fb7185' : '#34d399'}`,
+            background: eraserMode === 'erase' ? 'rgba(251,113,133,0.15)' : 'rgba(52,211,153,0.15)',
+          }}
+        />
+      )}
 
     </div>
       {/* Top Floating Multi-Layer Switcher Toolbar */}
