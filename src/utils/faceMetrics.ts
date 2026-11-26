@@ -20,6 +20,9 @@ export interface FitResult {
 
 const BASE = 'mediapipe/face_mesh/';
 let instPromise: Promise<any> | null = null;
+let modelFailed = false;
+/** true when the face model itself could not be loaded (different from "no face in the photo") */
+export const faceModelFailed = () => modelFailed;
 let chain: Promise<unknown> = Promise.resolve();
 
 function loadScript(src: string) {
@@ -42,8 +45,10 @@ function getInstance() {
       const inst = new FM({ locateFile: (f: string) => base + f });
       inst.setOptions({ maxNumFaces: 1, refineLandmarks: false, minDetectionConfidence: 0.4, minTrackingConfidence: 0.4 });
       await inst.initialize();
+      modelFailed = false;
       return inst;
     })().catch((e) => {
+      modelFailed = true;
       instPromise = null;
       throw e;
     });

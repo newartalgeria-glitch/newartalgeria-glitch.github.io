@@ -37,7 +37,7 @@ import { translations } from '../i18n/translations';
 import { autoRemoveGreenScreen, applyAdjustments, applySharpness, applySkinSmoothing } from '../utils/colorUtils';
 import { SUIT_TEMPLATES } from '../assets/suits';
 import { BACKGROUND_PRESETS } from '../assets/presets';
-import { detectFace, evalFit, FIT_TEXT } from '../utils/faceMetrics';
+import { detectFace, evalFit, FIT_TEXT, faceModelFailed } from '../utils/faceMetrics';
 import type { FaceMetrics, FitResult } from '../utils/faceMetrics';
 
 interface CanvasViewportProps {
@@ -539,7 +539,9 @@ export const CanvasViewport: React.FC<CanvasViewportProps> = ({
       const ar = language === 'ar';
       let text: string;
       if (!face) {
-        text = faceState === 'none'
+        text = faceState === 'none' && faceModelFailed()
+          ? (ar ? 'تعذّر تحميل نموذج كشف الوجه' : 'Face model could not be loaded')
+          : faceState === 'none'
           ? (ar ? 'لم يُكتشف وجه — تأكد أن الوجه ظاهر بوضوح' : 'No face detected — make sure the face is clearly visible')
           : (ar ? 'جارٍ تحليل الوجه…' : 'Analysing the face…');
       } else if (fit) {
@@ -1225,7 +1227,7 @@ export const CanvasViewport: React.FC<CanvasViewportProps> = ({
       const f = await detectFace(off);
       if (!f) {
         setFaceState('none');
-        setFitMsg(ar ? 'لم يُكتشف وجه في الصورة — جرّب صورة أوضح أو بوجه ظاهر بالكامل' : 'No face detected — try a clearer photo with the whole face visible');
+        setFitMsg(faceModelFailed() ? (ar ? 'تعذّر تحميل نموذج كشف الوجه — أعد تشغيل البرنامج' : 'Could not load the face model — restart the app') : ar ? 'لم يُكتشف وجه في الصورة — جرّب صورة أوضح أو بوجه ظاهر بالكامل' : 'No face detected — try a clearer photo with the whole face visible');
         return;
       }
       setFace(f);
