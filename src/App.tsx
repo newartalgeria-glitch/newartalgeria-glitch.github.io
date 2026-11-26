@@ -38,6 +38,7 @@ interface AppSnapshot {
   flipV: boolean;
   subjectTransform: LayerTransform;
   bgTransform: LayerTransform;
+  eraseMask?: HTMLCanvasElement | null;
 }
 
 export const App: React.FC = () => {
@@ -159,6 +160,14 @@ export const App: React.FC = () => {
   const [history, setHistory] = useState<AppSnapshot[]>([]);
   const [historyIndex, setHistoryIndex] = useState<number>(-1);
   const isUndoRedoAction = useRef(false);
+  // Eraser mask (immutable canvases, so each history step can keep its own)
+  const eraseMaskRef = useRef<HTMLCanvasElement | null>(null);
+  const [eraseMask, setEraseMask] = useState<HTMLCanvasElement | null>(null);
+  const [fitSignal, setFitSignal] = useState(0);
+  useEffect(() => {
+    eraseMaskRef.current = null;
+    setEraseMask(null);
+  }, [image]);
 
   const pushSnapshot = (
     cRect = cropRect,
@@ -187,6 +196,7 @@ export const App: React.FC = () => {
       flipV: fV,
       subjectTransform: { ...subTrans },
       bgTransform: { ...bgTrans },
+      eraseMask: eraseMaskRef.current,
     };
 
     setHistory(prev => {
@@ -213,6 +223,8 @@ export const App: React.FC = () => {
       setFlipV(target.flipV);
       if (target.subjectTransform) setSubjectTransform(target.subjectTransform);
       if (target.bgTransform) setBgTransform(target.bgTransform);
+      eraseMaskRef.current = target.eraseMask ?? null;
+      setEraseMask(target.eraseMask ?? null);
       setHistoryIndex(historyIndex - 1);
       setTimeout(() => {
         isUndoRedoAction.current = false;
@@ -236,6 +248,8 @@ export const App: React.FC = () => {
       setFlipV(target.flipV);
       if (target.subjectTransform) setSubjectTransform(target.subjectTransform);
       if (target.bgTransform) setBgTransform(target.bgTransform);
+      eraseMaskRef.current = target.eraseMask ?? null;
+      setEraseMask(target.eraseMask ?? null);
       setHistoryIndex(historyIndex + 1);
       setTimeout(() => {
         isUndoRedoAction.current = false;
@@ -400,6 +414,7 @@ export const App: React.FC = () => {
     }
 
     pushSnapshot(newCrop, undefined, undefined, updatedBg);
+    setFitSignal((n) => n + 1); // then place the face itself (zoom / raise / lower) once the crop is drawn
 
     const countryName = language === 'ar' ? preset.nameAr : preset.nameEn;
     showToast(
@@ -599,6 +614,15 @@ export const App: React.FC = () => {
         
         {/* Interactive Viewport Canvas */}
         <CanvasViewport
+          eraseMask={eraseMask}
+          onEraseCommit={(m) => {
+            eraseMaskRef.current = m;
+            setEraseMask(m);
+            pushSnapshot();
+          }}
+          onUndo={handleUndo}
+          canUndo={historyIndex > 0}
+          fitSignal={fitSignal}
           language={language}
           image={image}
           activeStandard={activeStandard}

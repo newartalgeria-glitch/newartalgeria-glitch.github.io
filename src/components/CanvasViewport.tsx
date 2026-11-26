@@ -46,6 +46,13 @@ interface CanvasViewportProps {
   activeStandard: PassportStandard;
   cropRect: CropRect;
   onCropChange: (crop: CropRect) => void;
+  /** erased-area mask (owned by the app so Undo/Redo covers it) */
+  eraseMask?: HTMLCanvasElement | null;
+  onEraseCommit?: (mask: HTMLCanvasElement | null) => void;
+  onUndo?: () => void;
+  canUndo?: boolean;
+  /** increments when the app wants the face placed automatically (e.g. after a 1-click preset) */
+  fitSignal?: number;
   adjustments: ImageAdjustments;
   chromaKey: ChromaKeySettings;
   background: BackgroundSettings;
@@ -85,6 +92,11 @@ export const CanvasViewport: React.FC<CanvasViewportProps> = ({
   activeStandard,
   cropRect,
   onCropChange,
+  eraseMask = null,
+  onEraseCommit,
+  onUndo,
+  canUndo = false,
+  fitSignal = 0,
   adjustments,
   chromaKey,
   background,
@@ -129,11 +141,11 @@ export const CanvasViewport: React.FC<CanvasViewportProps> = ({
   const [hoverPos, setHoverPos] = useState<{ x: number; y: number } | null>(null);
   const maskRef = useRef<HTMLCanvasElement | null>(null); // lives in the photo's own pixel space
   const maskHasContent = useRef(false);
-  const maskUndo = useRef<HTMLCanvasElement[]>([]);
+  const lastCommitted = useRef<HTMLCanvasElement | null>(null);
+  const autoFitRef = useRef<() => void>(() => {});
   const strokeLast = useRef<{ x: number; y: number } | null>(null);
   const maskRaf = useRef(0);
   const [eraserMode, setEraserMode] = useState<'erase' | 'restore'>('erase');
-  const [undoCount, setUndoCount] = useState(0);
   const [isErasing, setIsErasing] = useState(false);
 
   // Face measurements for the red/green guides
@@ -218,15 +230,36 @@ export const CanvasViewport: React.FC<CanvasViewportProps> = ({
 
   // A new photo starts with a clean eraser mask and no face measurements
   useEffect(() => {
-    maskRef.current = null;
-    maskHasContent.current = false;
-    maskUndo.current = [];
-    setUndoCount(0);
-    setMaskVersion((v) => v + 1);
     setFace(null);
     setFaceState('idle');
     setEraserOn(false);
   }, [image]);
+
+  // The erase mask is owned by the app (so Undo/Redo covers it): follow it when it changes from outside
+  useEffect(() => {
+    if (eraseMask === lastCommitted.current) return;
+    lastCommitted.current = eraseMask;
+    if (eraseMask) {
+      const c = document.createElement('canvas');
+      c.width = eraseMask.width;
+      c.height = eraseMask.height;
+      c.getContext('2d')!.drawImage(eraseMask, 0, 0);
+      maskRef.current = c;
+      maskHasContent.current = true;
+    } else {
+      maskRef.current = null;
+      maskHasContent.current = false;
+    }
+    setMaskVersion((v) => v + 1);
+    scheduleFace();
+  }, [eraseMask]);
+
+  // 1-click presets ask for the face to be placed automatically
+  useEffect(() => {
+    if (!fitSignal) return;
+    const t = window.setTimeout(() => autoFitRef.current(), 700);
+    return () => window.clearTimeout(t);
+  }, [fitSignal]);
 
   // Measure the face as soon as a guide is switched on
   useEffect(() => {
@@ -1234,6 +1267,8 @@ export const CanvasViewport: React.FC<CanvasViewportProps> = ({
     }
   };
 
+  autoFitRef.current = () => { void autoFitFace(); };
+
   // ---- Eraser helpers -------------------------------------------------
   const ensureMask = () => {
     if (!image) return null;
@@ -1261,14 +1296,19 @@ export const CanvasViewport: React.FC<CanvasViewportProps> = ({
     const m = ensureMask();
     if (!off || !m || !image) return null;
     const th = -((rotation + (adjustments.straighten || 0)) * Math.PI) / 180;
-    const dx = x - off.width / 2;
-    const dy = y - off.height / 2;
+    // undo the Subject layer transform (move / rotate / zoom of the person)
+    const sth = -(subjectTransform.rotation * Math.PI) / 180;
+    const sc = subjectTransform.scale || 1;
+    const ox = x - (off.width / 2 + subjectTransform.x);
+    const oy = y - (off.height / 2 + subjectTransform.y);
+    const dx = (ox * Math.cos(sth) - oy * Math.sin(sth)) / sc;
+    const dy = (ox * Math.sin(sth) + oy * Math.cos(sth)) / sc;
     let px = dx * Math.cos(th) - dy * Math.sin(th);
     let py = dx * Math.sin(th) + dy * Math.cos(th);
     if (flipH) px = -px;
     if (flipV) py = -py;
     const k = m.width / image.width;
-    return { x: (px + image.width / 2) * k, y: (py + image.height / 2) * k, k };
+    return { x: (px + image.width / 2) * k, y: (py + image.height / 2) * k, k, sc };
   };
 
   const eraserStroke = (clientX: number, clientY: number, first: boolean) => {
@@ -1281,7 +1321,7 @@ export const CanvasViewport: React.FC<CanvasViewportProps> = ({
     if (!c) return;
     const dRect = displayCanvasRef.current?.getBoundingClientRect();
     const cssToBmp = dRect && dRect.width && displayCanvasRef.current ? displayCanvasRef.current.width / dRect.width : 1;
-    const r = ((eraserSize * cssToBmp) / 2 / zoom) * pt.k;
+    const r = ((eraserSize * cssToBmp) / 2 / zoom / pt.sc) * pt.k;
     c.save();
     c.globalCompositeOperation = eraserMode === 'erase' ? 'source-over' : 'destination-out';
     c.fillStyle = '#000';
@@ -1306,36 +1346,24 @@ export const CanvasViewport: React.FC<CanvasViewportProps> = ({
     bumpMask();
   };
 
-  const snapshotMask = () => {
-    const m = ensureMask();
-    if (!m) return;
-    const snap = document.createElement('canvas');
-    snap.width = m.width;
-    snap.height = m.height;
-    snap.getContext('2d')!.drawImage(m, 0, 0);
-    maskUndo.current.push(snap);
-    if (maskUndo.current.length > 10) maskUndo.current.shift();
-    setUndoCount(maskUndo.current.length);
-  };
-
-  const undoEraser = () => {
-    const snap = maskUndo.current.pop();
+  /** end of a stroke: hand an immutable copy of the mask to the app (it records it in the history) */
+  const commitMask = () => {
     const m = maskRef.current;
-    if (snap && m) {
-      const c = m.getContext('2d')!;
-      c.clearRect(0, 0, m.width, m.height);
-      c.drawImage(snap, 0, 0);
-      setMaskVersion((v) => v + 1);
-    }
-    setUndoCount(maskUndo.current.length);
+    if (!m || !onEraseCommit) return;
+    const c = document.createElement('canvas');
+    c.width = m.width;
+    c.height = m.height;
+    c.getContext('2d')!.drawImage(m, 0, 0);
+    lastCommitted.current = c;
+    onEraseCommit(c);
   };
 
   const clearEraser = () => {
-    const m = maskRef.current;
-    if (!m) return;
-    snapshotMask();
-    m.getContext('2d')!.clearRect(0, 0, m.width, m.height);
+    if (!maskRef.current) return;
+    maskRef.current = null;
     maskHasContent.current = false;
+    lastCommitted.current = null;
+    onEraseCommit?.(null);
     setMaskVersion((v) => v + 1);
   };
 
@@ -1352,7 +1380,6 @@ export const CanvasViewport: React.FC<CanvasViewportProps> = ({
     }
 
     if (eraserOn && e.button === 0) {
-      snapshotMask();
       eraserStroke(e.clientX, e.clientY, true);
       setIsErasing(true);
       return;
@@ -2033,6 +2060,7 @@ export const CanvasViewport: React.FC<CanvasViewportProps> = ({
     if (isErasing) {
       setIsErasing(false);
       strokeLast.current = null;
+      commitMask();
       scheduleFace();
     }
     setIsPanning(false);
@@ -2207,8 +2235,8 @@ export const CanvasViewport: React.FC<CanvasViewportProps> = ({
               {eraserMode === 'erase' ? (language === 'ar' ? 'مسح' : 'Erase') : (language === 'ar' ? 'استرجاع' : 'Restore')}
             </button>
             <button
-              onClick={undoEraser}
-              disabled={undoCount === 0}
+              onClick={() => onUndo?.()}
+              disabled={!canUndo}
               className="text-[9px] px-1 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-200 disabled:opacity-40 cursor-pointer"
             >
               {language === 'ar' ? 'تراجع' : 'Undo'}
