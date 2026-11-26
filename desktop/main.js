@@ -39,6 +39,8 @@ function startServer() {
   })
 }
 app.setName(NAME)
+app.commandLine.appendSwitch('ignore-gpu-blocklist')
+app.commandLine.appendSwitch('enable-unsafe-swiftshader')
 app.setAppUserModelId('com.nadir.photolab')
 if (!app.requestSingleInstanceLock()) app.quit()
 

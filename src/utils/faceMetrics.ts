@@ -23,6 +23,9 @@ let instPromise: Promise<any> | null = null;
 let modelFailed = false;
 /** true when the face model itself could not be loaded (different from "no face in the photo") */
 export const faceModelFailed = () => modelFailed;
+let diag = '';
+/** short technical reason of the last failure (shown to the user so problems can be reported precisely) */
+export const faceDiag = () => diag;
 let chain: Promise<unknown> = Promise.resolve();
 
 function loadScript(src: string) {
@@ -49,6 +52,7 @@ function getInstance() {
       return inst;
     })().catch((e) => {
       modelFailed = true;
+      diag = 'init: ' + String((e && (e.message || e)) || e).slice(0, 80);
       instPromise = null;
       throw e;
     });
@@ -75,14 +79,16 @@ export async function detectFace(source: HTMLCanvasElement): Promise<FaceMetrics
       c.fillRect(0, 0, w, h);
       c.drawImage(source, 0, 0, w, h);
       const L: { x: number; y: number }[] | undefined = await new Promise((res) => {
-        const to = setTimeout(() => res(undefined), 15000);
+        const to = setTimeout(() => { modelFailed = true; diag = 'timeout 15s'; res(undefined); }, 15000);
         inst.onResults((r: any) => {
           clearTimeout(to);
           res(r?.multiFaceLandmarks?.[0]);
         });
-        inst.send({ image: tmp }).catch(() => res(undefined));
+        inst.send({ image: tmp }).catch((e: any) => { modelFailed = true; diag = 'send: ' + String((e && (e.message || e)) || e).slice(0, 80); res(undefined); });
       });
       if (!L) return null;
+      modelFailed = false;
+      diag = '';
       const chin = L[152].y * h;
       const top = L[10].y * h;
       const eyeIdx = [33, 133, 159, 145, 263, 362, 386, 374];
@@ -94,7 +100,9 @@ export async function detectFace(source: HTMLCanvasElement): Promise<FaceMetrics
         eyeY: eyeY / s,
         centerX: centerX / s,
       };
-    } catch {
+    } catch (e: any) {
+      modelFailed = true;
+      diag = 'run: ' + String((e && (e.message || e)) || e).slice(0, 80);
       return null;
     }
   };
